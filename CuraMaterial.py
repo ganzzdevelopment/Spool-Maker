@@ -23,7 +23,6 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #|          Import Modules           |
 # \---------------------------------/
 import os
-from sys import exit
 
 import re
 import platform
@@ -37,98 +36,77 @@ __version__ = '1.1.5'
 
 
 # /---------------------------------\
-#|          Get Cura Config          |
+#|        Material locations         |
 # \---------------------------------/
-# Windows
-if platform.system() == 'Windows':
-    from winreg import HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, OpenKey, QueryValueEx, EnumKey, QueryInfoKey
-    
-    def getLatestKey(hKey):
-        curaList = []
-        for i in range(0, QueryInfoKey(hKey)[0]):
-            curaList.append(EnumKey(hKey, i))
-        
-        fList = [k for k in curaList if 'Ultimaker Cura' in k]
-        fList.sort()
-        return fList[-1]
+# Materials are downloaded from Ultimaker's public fdm_materials repository
+# into a local folder before the app starts. No Cura install is needed.
+import io
+import shutil
+import sys
+import urllib.request
+import zipfile
 
-    def is_number(s):
-        try:
-            float(s)  # Try converting to a float to handle both integers and decimals
-            return True
-        except ValueError:
-            return False
-    
-    # Get Cura User Directory
-    CURA_USER_DIR = os.path.join(os.getenv('APPDATA'), 'cura')
-    CURA_CONFIGS = [f.name for f in os.scandir(CURA_USER_DIR) if f.is_dir()]
-    CURA_CONFIGS = [config for config in CURA_CONFIGS if is_number(config)]        # Remove any non-number values from list of cura configs
-    CURA_CONFIGS.sort(key=lambda x:int(x.replace(".","" if len(x)>3 else "0")))
-    CURA_USER_MAT_DIR = os.path.join(CURA_USER_DIR, CURA_CONFIGS[-1], 'materials')
+MATERIALS_URL = 'https://github.com/Ultimaker/fdm_materials/archive/refs/heads/master.zip'
 
-    # Get Cura Install Directory
-    latestInstalled = None
-    curaSysDir = None
-    
-    try:
-        # Search for Cura >= v5.3 version
-        access_key = OpenKey(HKEY_LOCAL_MACHINE, 'SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths', 0, KEY_READ)
-        curaList = []
-        for i in range(0, QueryInfoKey(access_key)[0]):
-            curaList.append(EnumKey(access_key, i))
-            fList = [k for k in curaList if 'UltiMaker Cura' in k]
-            fList.sort()
-        curaSysDirKey = OpenKey(HKEY_LOCAL_MACHINE,"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\" + fList[-1], 0, KEY_READ)
-        curaSysDir = os.path.dirname(QueryValueEx(curaSysDirKey, '')[0])
-        latestInstalled = 5
-    except:
-        try:
-            # Search for Cura >= v5.0 <= 5.2.1 version
-            curaSysDirKey = OpenKey(HKEY_CURRENT_USER, 'Software\\Microsoft\\Windows\\CurrentVersion\\App Paths\\Ultimaker-Cura.exe\\', 0, KEY_READ)
-            curaSysDir = os.path.dirname(QueryValueEx(curaSysDirKey, '')[0])
-            latestInstalled = 5
-        except:
-            try:
-                # Search for Cura <= v4.13.1
-                latestVersion = getLatestKey(OpenKey(HKEY_LOCAL_MACHINE, 'SOFTWARE\\WOW6432Node\\Ultimaker B.V.', 0, KEY_READ))
-                curaSysDirKey = OpenKey(HKEY_LOCAL_MACHINE, 'SOFTWARE\\WOW6432Node\\Ultimaker B.V.\\' + latestVersion, 0, KEY_READ)
-                curaSysDir = QueryValueEx(curaSysDirKey, '')[0]
-            except:
-                print('Failed to determine Ultimaker Cura install location')
-                exit(1)
-    
-    CURA_INSTALL_DIR = curaSysDir
-    if latestInstalled == 5:
-        CURA_MAT_DIR = os.path.join(CURA_INSTALL_DIR, 'share', 'cura', 'resources', 'materials')
+def _data_dir():
+    if platform.system() == 'Windows':
+        base = os.getenv('LOCALAPPDATA') or str(Path.home())
+    elif platform.system() == 'Darwin':
+        base = str(Path.home() / 'Library' / 'Application Support')
     else:
-        CURA_MAT_DIR = os.path.join(CURA_INSTALL_DIR, 'resources', 'materials')
+        base = os.getenv('XDG_DATA_HOME') or str(Path.home() / '.local' / 'share')
+    return os.path.join(base, 'SpoolMaker')
 
-elif platform.system() == 'Darwin': # OS X
-    # Get Cura User Directory
-    CURA_USER_DIR = str(Path.home()) + '/Library/Application Support/cura/'
-    CURA_CONFIGS = [f.name for f in os.scandir(CURA_USER_DIR) if f.is_dir()]
-    CURA_CONFIGS.sort(key=lambda x:int(x.replace(".","" if len(x)>3 else "0")))
-    CURA_USER_MAT_DIR = os.path.join(CURA_USER_DIR, CURA_CONFIGS[-1], 'materials')
-    
-    # Set Cura Install Directory
-    CURA_MAT_DIR = '/Applications/Ultimaker Cura.app/Contents/Resources/resources/materials'
+DATA_DIR = _data_dir()
+CURA_MAT_DIR = os.path.join(DATA_DIR, 'materials')         # downloaded, overwritten on every refresh
+CURA_USER_MAT_DIR = os.path.join(DATA_DIR, 'custom')       # your own .xml.fdm_material files, never touched
 
-elif platform.system() == 'Linux':
-    # Get Cura User Directory
-    CURA_USER_DIR = str(Path.home()) + '/.local/share/cura/'
-    CURA_CONFIGS = [f.name for f in os.scandir(CURA_USER_DIR) if f.is_dir()]
-    CURA_CONFIGS.sort(key=lambda x:int(x.replace(".","" if len(x)>3 else "0")))
-    CURA_USER_MAT_DIR = os.path.join(CURA_USER_DIR, CURA_CONFIGS[-1], 'materials')
-    
-    # Set Cura Install Directory
-    CURA_MAT_DIR = ''
+def _bundled_json():
+    base = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, 'materials_fallback.json')
 
-else:
-    print('Unknown operating system. To override, remove the exit(1) command from the CuraMaterial script.')
-    exit(1)
+def download_materials(timeout=30):
+    '''Download the material profiles into CURA_MAT_DIR. Returns the number of files, or raises on failure.'''
+    with urllib.request.urlopen(MATERIALS_URL, timeout=timeout) as r:
+        data = r.read()
+    tmp = CURA_MAT_DIR + '.new'
+    shutil.rmtree(tmp, ignore_errors=True)
+    os.makedirs(tmp, exist_ok=True)
+    n = 0
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        for name in z.namelist():
+            if name.endswith('.xml.fdm_material'):
+                with z.open(name) as src, open(os.path.join(tmp, os.path.basename(name)), 'wb') as dst:
+                    shutil.copyfileobj(src, dst)
+                n += 1
+    if n == 0:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise RuntimeError('No materials found in download')
+    shutil.rmtree(CURA_MAT_DIR, ignore_errors=True)
+    os.replace(tmp, CURA_MAT_DIR)
+    return n
 
-print('User Material Directory: ', CURA_USER_MAT_DIR)
-print('System Material Directory: ', CURA_MAT_DIR)
+def refresh_materials():
+    '''Download fresh materials; fall back to the cached copy, then to the copy bundled in the exe.'''
+    os.makedirs(CURA_USER_MAT_DIR, exist_ok=True)
+    try:
+        n = download_materials()
+        print('Downloaded', n, 'materials to', CURA_MAT_DIR)
+        return 'downloaded'
+    except Exception as e:
+        print('Material download failed:', e)
+    if os.path.isdir(CURA_MAT_DIR) and any(f.endswith('.xml.fdm_material') for f in os.listdir(CURA_MAT_DIR)):
+        print('Using cached materials in', CURA_MAT_DIR)
+        return 'cached'
+    fb = _bundled_json()
+    if os.path.isfile(fb):
+        print('Using bundled fallback materials')
+        return 'bundled'
+    return 'none'
+
+refresh_materials()
+print('Material directory:', CURA_MAT_DIR)
+print('Custom material directory:', CURA_USER_MAT_DIR)
 
 
 
@@ -151,7 +129,7 @@ def read_material(cm):
     '''Reads a cura material profile (.xml.fdm_material) and returns a curaMaterial object'''
     brand = material = color = guid = ''
     found = [False]*4 # Corresponds with above values. True once that value is found.
-    with open(cm, 'r') as f:
+    with open(cm, 'r', encoding='utf-8', errors='replace') as f:
         for line in f:
             if all(found):
                 break
@@ -192,6 +170,13 @@ def get_all_materials():
     '''Reads all system and user cura materials, and returns a list of curaMaterial objects'''
     mList = [] # List of materials
     sList = [] # List of material names for QT combobox
+
+    have_files = os.path.isdir(CURA_MAT_DIR) and any(f.endswith('.xml.fdm_material') for f in os.listdir(CURA_MAT_DIR))
+    if not have_files and os.path.isfile(_bundled_json()):
+        import json
+        with open(_bundled_json(), encoding='utf-8') as f:
+            for b, m, col, g in json.load(f):
+                mList.append(curaMaterial(b, m, col, g))
 
     for root, _, files in os.walk(CURA_USER_MAT_DIR):
         for file in files:

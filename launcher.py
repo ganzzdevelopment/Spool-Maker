@@ -36,10 +36,16 @@ import NFCSpool as s
 import reader_select
 from smartcard.Exceptions import CardConnectionException, NoCardException
 
-# --- Resilient reads -------------------------------------------------------
-# The reader can drop out for a moment during the ~75 read commands of one scan
-# (Windows error 0x80100017, "reader unavailable"). Instead of crashing, wait
-# briefly, reconnect to the tag and retry the same command.
+# --- Protocol selection + resilient reads ----------------------------------
+# The log showed the first read command failing with "protocol T1" and error
+# 0x80100017 / 0x80100069. The app now opens the tag with T=0 first, then T=1,
+# then the Windows default, and logs which one works. A failed command is
+# retried with the next protocol.
+from smartcard.CardConnection import CardConnection
+
+PROTOCOLS = [('T0', CardConnection.T0_protocol),
+             ('T1', CardConnection.T1_protocol),
+             ('default', None)]
 RETRIES = 6
 PAUSE = 0.4
 
@@ -47,26 +53,55 @@ PAUSE = 0.4
 def _wrap_connection(conn):
     if getattr(conn, '_resilient', False):
         return conn
-    original = conn.transmit
+    orig_connect = conn.connect
+    orig_reconnect = conn.reconnect
+    orig_transmit = conn.transmit
+    state = {'i': 0, 'ok': False}
+
+    def _name():
+        return PROTOCOLS[state['i']][0]
+
+    def _proto():
+        return PROTOCOLS[state['i']][1]
+
+    def connect(*a, **k):
+        print('connect with protocol', _name())
+        if _proto() is None:
+            return orig_connect()
+        return orig_connect(_proto())
+
+    def reconnect(*a, **k):
+        print('reconnect with protocol', _name())
+        if _proto() is None:
+            return orig_reconnect()
+        return orig_reconnect(_proto())
 
     def transmit(cmd, *a, **k):
         last = None
         for attempt in range(RETRIES):
             try:
-                return original(cmd, *a, **k)
+                result = orig_transmit(cmd, *a, **k)
+                if not state['ok']:
+                    state['ok'] = True
+                    print('transmit OK with protocol', _name())
+                return result
             except (CardConnectionException, NoCardException) as e:
                 last = e
-                print('transmit failed (attempt %d/%d): %s' % (attempt + 1, RETRIES, e))
+                print('transmit failed (attempt %d/%d, protocol %s): %s' % (attempt + 1, RETRIES, _name(), e))
                 time.sleep(PAUSE * (attempt + 1))
+                if attempt % 2 == 1:
+                    state['i'] = (state['i'] + 1) % len(PROTOCOLS)
                 try:
-                    conn.reconnect()
+                    reconnect()
                 except Exception as e2:
                     try:
-                        conn.connect()
+                        connect()
                     except Exception as e3:
                         print('reconnect failed:', e2, '/', e3)
         raise last
 
+    conn.connect = connect
+    conn.reconnect = reconnect
     conn.transmit = transmit
     conn._resilient = True
     return conn

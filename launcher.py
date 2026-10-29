@@ -6,6 +6,7 @@ and errors are shown in a message box instead of silently closing the app.
 """
 import os
 import sys
+import time
 import traceback
 
 _base = os.getenv('LOCALAPPDATA') or os.path.expanduser('~')
@@ -33,11 +34,52 @@ sys.excepthook = _hook
 
 import NFCSpool as s
 import reader_select
+from smartcard.Exceptions import CardConnectionException, NoCardException
+
+# --- Resilient reads -------------------------------------------------------
+# The reader can drop out for a moment during the ~75 read commands of one scan
+# (Windows error 0x80100017, "reader unavailable"). Instead of crashing, wait
+# briefly, reconnect to the tag and retry the same command.
+RETRIES = 6
+PAUSE = 0.4
+
+
+def _wrap_connection(conn):
+    if getattr(conn, '_resilient', False):
+        return conn
+    original = conn.transmit
+
+    def transmit(cmd, *a, **k):
+        last = None
+        for attempt in range(RETRIES):
+            try:
+                return original(cmd, *a, **k)
+            except (CardConnectionException, NoCardException) as e:
+                last = e
+                print('transmit failed (attempt %d/%d): %s' % (attempt + 1, RETRIES, e))
+                time.sleep(PAUSE * (attempt + 1))
+                try:
+                    conn.reconnect()
+                except Exception as e2:
+                    try:
+                        conn.connect()
+                    except Exception as e3:
+                        print('reconnect failed:', e2, '/', e3)
+        raise last
+
+    conn.transmit = transmit
+    conn._resilient = True
+    return conn
 
 
 class _NFCRequest:
     def waitforcard(self):
-        return reader_select.make_request(s.TIMEOUT, s.card_type).waitforcard()
+        service = reader_select.make_request(s.TIMEOUT, s.card_type).waitforcard()
+        try:
+            _wrap_connection(service.connection)
+        except Exception as e:
+            print('Could not wrap connection:', e)
+        return service
 
 
 s.request = _NFCRequest()

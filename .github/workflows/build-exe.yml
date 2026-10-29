@@ -15,9 +15,11 @@ jobs:
           python-version: '3.11'
       - name: Install dependencies
         run: pip install PyQt5 numpy pyscard crc8 ndef nfcpy pyinstaller
-      - name: Build exe
-        run: pyinstaller --onefile --windowed --icon=icon.ico --add-data="icon.ico;." --add-data="gui.ui;." --add-data="materials_fallback.json;." --name SpoolMaker launcher.py
+      - name: Build (folder, no self-extracting exe)
+        run: pyinstaller --onedir --windowed --icon=icon.ico --add-data="icon.ico;." --add-data="gui.ui;." --add-data="materials_fallback.json;." --name SpoolMaker launcher.py
+      - name: Hash of the exe
+        run: Get-FileHash dist/SpoolMaker/SpoolMaker.exe -Algorithm SHA256 | Format-List
       - uses: actions/upload-artifact@v4
         with:
-          name: SpoolMaker-windows
-          path: dist/SpoolMaker.exe
+          name: SpoolMaker-windows-folder
+          path: dist/SpoolMaker

@@ -43,9 +43,9 @@ from smartcard.Exceptions import CardConnectionException, NoCardException
 # retried with the next protocol.
 from smartcard.CardConnection import CardConnection
 
-PROTOCOLS = [('T0', CardConnection.T0_protocol),
+PROTOCOLS = [('default', None),
              ('T1', CardConnection.T1_protocol),
-             ('default', None)]
+             ('T0', CardConnection.T0_protocol)]
 RETRIES = 6
 PAUSE = 0.4
 
@@ -65,16 +65,29 @@ def _wrap_connection(conn):
         return PROTOCOLS[state['i']][1]
 
     def connect(*a, **k):
-        print('connect with protocol', _name())
-        if _proto() is None:
-            return orig_connect()
-        return orig_connect(_proto())
+        # try every protocol in turn; a protocol mismatch (0x8010000F) moves on to the next one
+        last = None
+        for _ in range(len(PROTOCOLS)):
+            print('connect with protocol', _name())
+            try:
+                if _proto() is None:
+                    return orig_connect()
+                return orig_connect(_proto())
+            except (CardConnectionException, NoCardException) as e:
+                last = e
+                print('connect failed with protocol %s: %s' % (_name(), e))
+                state['i'] = (state['i'] + 1) % len(PROTOCOLS)
+        raise last
 
     def reconnect(*a, **k):
         print('reconnect with protocol', _name())
-        if _proto() is None:
-            return orig_reconnect()
-        return orig_reconnect(_proto())
+        try:
+            if _proto() is None:
+                return orig_reconnect()
+            return orig_reconnect(_proto())
+        except (CardConnectionException, NoCardException) as e:
+            print('reconnect failed with protocol %s: %s' % (_name(), e))
+            return connect()
 
     def transmit(cmd, *a, **k):
         last = None
